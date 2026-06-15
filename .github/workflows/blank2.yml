@@ -4,19 +4,40 @@ on:
 
 jobs:
   build-macos:
-    runs-on: macos-latest # Serveur de dernière génération (démarre instantanément)
+    runs-on: macos-latest
     steps:
-      - name: Récupérer le fichier ZIP
+      - name: Récupérer les fichiers
         uses: actions/checkout@v4
 
-      - name: Décompresser le projet
-        run: unzip -o SystemMonitorApp_v7.0.zip
+      - name: Décompresser le projet ZIP
+        run: |
+          ZIP_FILE=$(find . -name "*.zip" | head -n 1)
+          if [ -n "$ZIP_FILE" ]; then
+            echo "Fichier ZIP trouvé : $ZIP_FILE"
+            unzip -o "$ZIP_FILE"
+          else
+            echo "Erreur : Aucun fichier ZIP trouvé à la racine du dépôt !"
+            exit 1
+          fi
 
       - name: Trouver et Compiler l'application
         run: |
           XCODEPROJ_PATH=$(find . -name "*.xcodeproj" | head -n 1)
+          if [ -z "$XCODEPROJ_PATH" ]; then
+            echo "Erreur : Impossible de trouver un fichier .xcodeproj !"
+            exit 1
+          fi
+          echo "Projet trouvé : $XCODEPROJ_PATH"
+          
+          # Détection automatique du Scheme
+          SCHEME_NAME=$(xcodebuild -list -project "$XCODEPROJ_PATH" | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag' | sed 's/^[[:space:]]*//' | head -n 1)
+          if [ -z "$SCHEME_NAME" ]; then
+            SCHEME_NAME="SystemMonitorApp"
+          fi
+          echo "Scheme détecté : $SCHEME_NAME"
+
           xcodebuild -project "$XCODEPROJ_PATH" \
-                     -alltargets \
+                     -scheme "$SCHEME_NAME" \
                      -configuration Release \
                      CODE_SIGNING_ALLOWED=NO \
                      CODE_SIGNING_REQUIRED=NO \
