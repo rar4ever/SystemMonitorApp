@@ -1,0 +1,127 @@
+name: Build SystemMonitorApp Ventura
+on:
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Récupérer les fichiers
+        uses: actions/checkout@v4
+
+      - name: Décompresser le projet ZIP
+        run: |
+          ZIP_FILE=$(find . -name "*.zip" | head -n 1)
+          if [ -n "$ZIP_FILE" ]; then
+            echo "Fichier ZIP trouvé : $ZIP_FILE"
+            unzip -o "$ZIP_FILE"
+          else
+            echo "Erreur : Aucun fichier ZIP trouvé !"
+            exit 1
+          fi
+
+      - name: Réparation structurelle de l'arbre Xcode
+        run: |
+          cat << 'EOF' > repair.py
+          import os
+          import plistlib
+          import subprocess
+
+          found = False
+          for root, dirs, files in os.walk('.'):
+              if 'project.pbxproj' in files:
+                  found = True
+                  pbx_path = os.path.join(root, 'project.pbxproj')
+                  print(f"🛠 Transformation en XML de : {pbx_path}")
+                  
+                  # 1. Forcer la conversion en XML lisible par Python
+                  subprocess.run(['plutil', '-convert', 'xml1', pbx_path], check=True)
+                  
+                  # 2. Lire le dictionnaire Xcode
+                  with open(pbx_path, 'rb') as f:
+                      plist = plistlib.load(f)
+                  
+                  objects = plist.get('objects', {})
+                  
+                  # 3. Lister tous les identifiants qui sont des PBXFileReference
+                  file_ref_ids = set()
+                  for obj_id, obj_data in objects.items():
+                      if isinstance(obj_data, dict) and obj_data.get('isa') == 'PBXFileReference':
+                          file_ref_ids.add(obj_id)
+                  
+                  # 4. Nettoyer les listes de compilation (BuildPhases)
+                  repaired_count = 0
+                  for obj_id, obj_data in objects.items():
+                      if isinstance(obj_data, dict):
+                          isa = obj_data.get('isa', '')
+                          # Si c'est une liste de compilation qui contient des fichiers
+                          if 'BuildPhase' in isa and 'files' in obj_data:
+                              original_files = obj_data['files']
+                              # On vire tous les identifiants qui sont des PBXFileReference (les intrus)
+                              cleaned_files = [fid for fid in original_files if fid not in file_ref_ids]
+                              
+                              if len(cleaned_files) != len(original_files):
+                                  removed = len(original_files) - len(cleaned_files)
+                                  repaired_count += removed
+                                  obj_data['files'] = cleaned_files
+                                  print(f"🔧 Phase '{isa}' corrigée : {removed} intrus éjecté(s).")
+                  
+                  print(f"✅ {repaired_count} erreur(s) d'architecture IA réparée(s) !")
+                  
+                  # 5. Sauvegarder directement en XML (Xcode le lit nativement !)
+                  with open(pbx_path, 'wb') as f:
+                      plistlib.dump(plist, f, fmt=plistlib.FMT_XML)
+
+          if not found:
+              print("❌ Aucun fichier project.pbxproj trouvé.")
+          EOF
+          python3 repair.py
+
+      - name: Trouver et Valider le projet Xcode
+        run: |
+          XCODEPROJ_PATH=$(find . -name "*.xcodeproj" | head -n 1)
+          if [ -z "$XCODEPROJ_PATH" ]; then
+            echo "❌ Impossible de trouver un fichier .xcodeproj !"
+            exit 1
+          fi
+          echo "📍 Projet trouvé : $XCODEPROJ_PATH"
+          
+          set +e
+          xcodebuild -list -project "$XCODEPROJ_PATH"
+          XCODE_STATUS=$?
+          set -e
+          
+          if [ $XCODE_STATUS -ne 0 ]; then
+            echo "❌ Erreur critique : Le projet Xcode refuse toujours de s'ouvrir (Code $XCODE_STATUS) !"
+            exit 1
+          fi
+          echo "✅ Projet valide et parfaitement lisible par Xcode !"
+
+      - name: Compiler l'application
+        run: |
+          XCODEPROJ_PATH=$(find . -name "*.xcodeproj" | head -n 1)
+          SCHEME_NAME=$(xcodebuild -list -project "$XCODEPROJ_PATH" 2>/dev/null | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag' | sed 's/^[[:space:]]*//' | head -n 1)
+          if [ -z "$SCHEME_NAME" ]; then
+            SCHEME_NAME="SystemMonitorApp"
+          fi
+          echo "🚀 Scheme détecté : $SCHEME_NAME"
+
+          xcodebuild -project "$XCODEPROJ_PATH" \
+                     -scheme "$SCHEME_NAME" \
+                     -configuration Release \
+                     CODE_SIGNING_ALLOWED=NO \
+                     CODE_SIGNING_REQUIRED=NO \
+                     CODE_SIGN_IDENTITY="" \
+                     MACOSX_DEPLOYMENT_TARGET=13.0 \
+                     -derivedDataPath build
+
+      - name: Compresser l'application finale
+        run: |
+          cd build/Build/Products/Release
+          zip -r ../../../../SystemMonitorApp_Ventura.zip *.app
+
+      - name: Télécharger le fichier final
+        uses: actions/upload-artifact@v4
+        with:
+          name: SystemMonitorApp-Ventura
+          path: SystemMonitorApp_Ventura.zip
