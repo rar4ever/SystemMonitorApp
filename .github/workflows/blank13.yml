@@ -1,0 +1,110 @@
+name: Build SystemMonitorApp Ventura
+on:
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Récupérer les fichiers
+        uses: actions/checkout@v4
+
+      - name: Décompresser le projet ZIP
+        run: |
+          ZIP_FILE=$(find . -name "*.zip" | head -n 1)
+          if [ -n "$ZIP_FILE" ]; then
+            echo "Fichier ZIP trouvé : $ZIP_FILE"
+            unzip -o "$ZIP_FILE"
+          else
+            echo "Erreur : Aucun fichier ZIP trouvé !"
+            exit 1
+          fi
+
+      - name: Réparer proprement le projet Xcode corrompu
+        run: |
+          echo "==> Étape 1 : Réparation Python universelle (détection UTF-8 / UTF-16) <=="
+          python3 -c "
+          import os, re
+          for root, dirs, files in os.walk('.'):
+              if 'project.pbxproj' in files:
+                  p = os.path.join(root, 'project.pbxproj')
+                  print('Analyse de :', p)
+                  with open(p, 'rb') as f:
+                      data = f.read()
+                  text = None
+                  for enc in ['utf-8', 'utf-16', 'utf-16le', 'utf-16be']:
+                      try:
+                          text = data.decode(enc)
+                          print(f'   [+] Décodage réussi avec l\'encodage : {enc}')
+                          break
+                      except:
+                          continue
+                  if text is None:
+                      text = data.decode('utf-8', errors='ignore')
+                  
+                  # Supprime proprement buildPhase avec ou sans guillemets, mono ou multi-ligne
+                  cleaned, count = re.subn(r'\"?buildPhase\"?\s*=\s*[^;]+;\s*\n?', '', text)
+                  print(f'   [+] {count} occurrence(s) de buildPhase supprimée(s).')
+                  with open(p, 'w', encoding='utf-8') as f:
+                      f.write(cleaned)
+          "
+
+          echo "==> Étape 2 : Normalisation officielle Apple via plutil <=="
+          # Force la conversion de tous les pbxproj en format texte OpenStep UTF-8 standard
+          find . -name "project.pbxproj" -exec plutil -convert openstep {} \;
+
+          echo "==> Étape 3 : Purge finale de sécurité absolue via Perl <=="
+          # Si un résidu a survécu à la conversion, Perl l'extermine en mode brut textuel
+          find . -name "project.pbxproj" -exec perl -0777 -pi -e 's/"?buildPhase"?\s*=\s*[^;]+;\s*\n?//g' {} +
+          
+          echo "✅ Opération de nettoyage multidimensionnelle terminée !"
+
+      - name: Trouver et Valider le projet Xcode
+        run: |
+          XCODEPROJ_PATH=$(find . -name "*.xcodeproj" | head -n 1)
+          if [ -z "$XCODEPROJ_PATH" ]; then
+            echo "❌ Impossible de trouver un fichier .xcodeproj !"
+            exit 1
+          fi
+          echo "📍 Projet trouvé : $XCODEPROJ_PATH"
+          
+          # Désactivation temporaire du "exit on error" pour capturer le verdict de Xcode
+          set +e
+          xcodebuild -list -project "$XCODEPROJ_PATH"
+          XCODE_STATUS=$?
+          set -e
+          
+          if [ $XCODE_STATUS -ne 0 ]; then
+            echo "❌ Erreur critique : Le projet Xcode refuse toujours de s'ouvrir (Code $XCODE_STATUS) !"
+            exit 1
+          fi
+          echo "✅ Projet valide et lisible par Xcode !"
+
+      - name: Compiler l'application
+        run: |
+          XCODEPROJ_PATH=$(find . -name "*.xcodeproj" | head -n 1)
+          SCHEME_NAME=$(xcodebuild -list -project "$XCODEPROJ_PATH" 2>/dev/null | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag' | sed 's/^[[:space:]]*//' | head -n 1)
+          if [ -z "$SCHEME_NAME" ]; then
+            SCHEME_NAME="SystemMonitorApp"
+          fi
+          echo "🚀 Scheme détecté : $SCHEME_NAME"
+
+          xcodebuild -project "$XCODEPROJ_PATH" \
+                     -scheme "$SCHEME_NAME" \
+                     -configuration Release \
+                     CODE_SIGNING_ALLOWED=NO \
+                     CODE_SIGNING_REQUIRED=NO \
+                     CODE_SIGN_IDENTITY="" \
+                     MACOSX_DEPLOYMENT_TARGET=13.0 \
+                     -derivedDataPath build
+
+      - name: Compresser l'application finale
+        run: |
+          cd build/Build/Products/Release
+          zip -r ../../../../SystemMonitorApp_Ventura.zip *.app
+
+      - name: Télécharger le fichier final
+        uses: actions/upload-artifact@v4
+        with:
+          name: SystemMonitorApp-Ventura
+          path: SystemMonitorApp_Ventura.zip
