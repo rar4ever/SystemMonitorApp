@@ -1,0 +1,118 @@
+name: Build SystemMonitorApp Ventura
+on:
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Récupérer les fichiers
+        uses: actions/checkout@v4
+
+      - name: Décompresser le projet ZIP
+        run: |
+          ZIP_FILE=$(find . -name "*.zip" | head -n 1)
+          if [ -n "$ZIP_FILE" ]; then
+            echo "Fichier ZIP trouvé : $ZIP_FILE"
+            unzip -o "$ZIP_FILE"
+          else
+            echo "Erreur : Aucun fichier ZIP trouvé !"
+            exit 1
+          fi
+
+      - name: Réparer proprement le projet Xcode corrompu
+        run: |
+          cat << 'EOF' > repair.py
+          import re
+          import os
+          
+          found_any = False
+          # On parcourt TOUT l'arbre des dossiers sans s'arrêter au premier trouvé
+          for root, dirs, files in os.walk('.'):
+              if 'project.pbxproj' in files:
+                  pbxproj_path = os.path.join(root, 'project.pbxproj')
+                  found_any = True
+                  print(f"Analyse et réparation de : {pbxproj_path}")
+                  
+                  with open(pbxproj_path, 'r', encoding='utf-8', errors='ignore') as f:
+                      content = f.read()
+                  
+                  # Compter combien de fois l'erreur apparaît dans ce fichier précis
+                  matches = re.findall(r'\bbuildPhase\s*=', content)
+                  print(f"-> Trouvé {len(matches)} occurrence(s) de 'buildPhase' (singulier)")
+                  
+                  if len(matches) > 0:
+                      # 1. Éradication globale brute de 'buildPhase = ...;' (singulier)
+                      content = re.sub(r'\bbuildPhase\s*=\s*[^;]+;\s*\n?', '', content)
+                      print("   [+] Propriété illégale supprimée globalement.")
+                  
+                  # 2. Sécurité par bloc pour le format multi-ligne au cas où
+                  def clean_file_reference_block(match):
+                      block_text = match.group(0)
+                      return re.sub(r'\bbuildPhase\s*=\s*[^;]+;\s*\n?', '', block_text)
+                  
+                  pattern = r'\{[^{}]*isa\s*=\s*PBXFileReference[^{}]*\}'
+                  content = re.sub(pattern, clean_file_reference_block, content)
+                  
+                  # 3. Nettoyage des conflits Git si présents
+                  content = re.sub(r'<<<<<<<[^\n]*\n.*?\n=======\n.*?\n>>>>>>>[^\n]*\n', '', content, flags=re.DOTALL)
+                  
+                  with open(pbxproj_path, 'w', encoding='utf-8') as f:
+                      f.write(content)
+                      
+          if not found_any:
+              print("❌ Aucun fichier project.pbxproj trouvé dans tout le répertoire.")
+          else:
+              print("✅ Traitement global de tous les fichiers terminé !")
+          EOF
+          python3 repair.py
+
+      - name: Trouver et Valider le projet Xcode
+        run: |
+          XCODEPROJ_PATH=$(find . -name "*.xcodeproj" | head -n 1)
+          if [ -z "$XCODEPROJ_PATH" ]; then
+            echo "❌ Impossible de trouver un fichier .xcodeproj !"
+            exit 1
+          fi
+          echo "📍 Projet trouvé : $XCODEPROJ_PATH"
+          
+          # Désactivation temporaire du "exit on error" pour capturer le verdict de Xcode
+          set +e
+          xcodebuild -list -project "$XCODEPROJ_PATH"
+          XCODE_STATUS=$?
+          set -e
+          
+          if [ $XCODE_STATUS -ne 0 ]; then
+            echo "❌ Erreur critique : Le projet Xcode refuse toujours de s'ouvrir (Code $XCODE_STATUS) !"
+            exit 1
+          fi
+          echo "✅ Projet valide et lisible par Xcode !"
+
+      - name: Compiler l'application
+        run: |
+          XCODEPROJ_PATH=$(find . -name "*.xcodeproj" | head -n 1)
+          SCHEME_NAME=$(xcodebuild -list -project "$XCODEPROJ_PATH" 2>/dev/null | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag' | sed 's/^[[:space:]]*//' | head -n 1)
+          if [ -z "$SCHEME_NAME" ]; then
+            SCHEME_NAME="SystemMonitorApp"
+          fi
+          echo "🚀 Scheme détecté : $SCHEME_NAME"
+
+          xcodebuild -project "$XCODEPROJ_PATH" \
+                     -scheme "$SCHEME_NAME" \
+                     -configuration Release \
+                     CODE_SIGNING_ALLOWED=NO \
+                     CODE_SIGNING_REQUIRED=NO \
+                     CODE_SIGN_IDENTITY="" \
+                     MACOSX_DEPLOYMENT_TARGET=13.0 \
+                     -derivedDataPath build
+
+      - name: Compresser l'application finale
+        run: |
+          cd build/Build/Products/Release
+          zip -r ../../../../SystemMonitorApp_Ventura.zip *.app
+
+      - name: Télécharger le fichier final
+        uses: actions/upload-artifact@v4
+        with:
+          name: SystemMonitorApp-Ventura
+          path: SystemMonitorApp_Ventura.zip
