@@ -1,0 +1,57 @@
+name: Build SystemMonitorApp Ventura
+on:
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Récupérer les fichiers
+        uses: actions/checkout@v4
+
+      - name: Décompresser le projet ZIP
+        run: |
+          ZIP_FILE=$(find . -name "*.zip" | head -n 1)
+          if [ -n "$ZIP_FILE" ]; then
+            echo "Fichier ZIP trouvé : $ZIP_FILE"
+            unzip -o "$ZIP_FILE"
+          else
+            echo "Erreur : Aucun fichier ZIP trouvé à la racine du dépôt !"
+            exit 1
+          fi
+
+      - name: Trouver et Compiler l'application
+        run: |
+          XCODEPROJ_PATH=$(find . -name "*.xcodeproj" | head -n 1)
+          if [ -z "$XCODEPROJ_PATH" ]; then
+            echo "Erreur : Impossible de trouver un fichier .xcodeproj !"
+            exit 1
+          fi
+          echo "Projet trouvé : $XCODEPROJ_PATH"
+          
+          # Détection automatique du Scheme
+          SCHEME_NAME=$(xcodebuild -list -project "$XCODEPROJ_PATH" | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag' | sed 's/^[[:space:]]*//' | head -n 1)
+          if [ -z "$SCHEME_NAME" ]; then
+            SCHEME_NAME="SystemMonitorApp"
+          fi
+          echo "Scheme détecté : $SCHEME_NAME"
+
+          xcodebuild -project "$XCODEPROJ_PATH" \
+                     -scheme "$SCHEME_NAME" \
+                     -configuration Release \
+                     CODE_SIGNING_ALLOWED=NO \
+                     CODE_SIGNING_REQUIRED=NO \
+                     CODE_SIGN_IDENTITY="" \
+                     MACOSX_DEPLOYMENT_TARGET=13.0 \
+                     -derivedDataPath build
+
+      - name: Compresser l'application finale
+        run: |
+          cd build/Build/Products/Release
+          zip -r ../../../../SystemMonitorApp_Ventura.zip *.app
+
+      - name: Télécharger le fichier final
+        uses: actions/upload-artifact@v4
+        with:
+          name: SystemMonitorApp-Ventura
+          path: SystemMonitorApp_Ventura.zip
