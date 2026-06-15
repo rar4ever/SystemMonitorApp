@@ -1,0 +1,39 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2867
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 name: Build SystemMonitorApp Ventura\
+on:\
+  workflow_dispatch:\
+\
+jobs:\
+  build-macos:\
+    runs-on: macos-13 # Utilise les serveurs macOS Ventura\
+    steps:\
+      - name: R\'e9cup\'e9rer le code\
+        uses: actions/checkout@v4\
+\
+      - name: Compiler SystemMonitorApp\
+        run: |\
+          xcodebuild -project SystemMonitorApp.xcodeproj \\\
+                     -scheme SystemMonitorApp \\\
+                     -configuration Release \\\
+                     CODE_SIGNING_ALLOWED=NO \\\
+                     CODE_SIGNING_REQUIRED=NO \\\
+                     CODE_SIGN_IDENTITY="" \\\
+                     MACOSX_DEPLOYMENT_TARGET=13.0 \\\
+                     -derivedDataPath build\
+\
+      - name: Compresser l'application\
+        run: |\
+          cd build/Build/Products/Release\
+          zip -r ../../../../SystemMonitorApp_Ventura.zip *.app\
+\
+      - name: T\'e9l\'e9charger le fichier final\
+        uses: actions/upload-artifact@v4\
+        with:\
+          name: SystemMonitorApp-Ventura\
+          path: SystemMonitorApp_Ventura.zip}
