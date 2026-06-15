@@ -1,0 +1,32 @@
+name: Reconstruire le projet proprement
+on:
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Décompresser le projet
+        run: |
+          unzip -o "$(find . -name "*.zip" | head -n 1)"
+
+      - name: Nettoyage et Reconfiguration
+        run: |
+          # 1. Suppression du fichier projet corrompu
+          find . -name "project.pbxproj" -exec rm -f {} \;
+          
+          # 2. On lance un build "à froid"
+          # Comme le pbxproj n'existe plus, on pointe vers le dossier
+          # Xcode va essayer de reconstruire les chemins, mais on va surtout 
+          # se concentrer sur la compilation des sources Swift
+          
+          echo "Tentative de compilation par reconstruction des targets..."
+          
+          xcodebuild build -scheme "SystemMonitorApp" \
+                     -destination 'generic/platform=macOS' \
+                     CODE_SIGNING_ALLOWED=NO \
+                     CODE_SIGNING_REQUIRED=NO \
+                     CODE_SIGN_IDENTITY=""
