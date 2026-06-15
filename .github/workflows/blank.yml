@@ -4,19 +4,19 @@ on:
 
 jobs:
   build-macos:
-    runs-on: macos-13
+    runs-on: macos-latest # Serveur de dernière génération (démarre instantanément)
     steps:
       - name: Récupérer le fichier ZIP
         uses: actions/checkout@v4
 
       - name: Décompresser le projet
-        run: unzip SystemMonitorApp_v7.0.zip
+        run: unzip -o SystemMonitorApp_v7.0.zip
 
       - name: Trouver et Compiler l'application
         run: |
           XCODEPROJ_PATH=$(find . -name "*.xcodeproj" | head -n 1)
           xcodebuild -project "$XCODEPROJ_PATH" \
-                     -scheme SystemMonitorApp \
+                     -alltargets \
                      -configuration Release \
                      CODE_SIGNING_ALLOWED=NO \
                      CODE_SIGNING_REQUIRED=NO \
