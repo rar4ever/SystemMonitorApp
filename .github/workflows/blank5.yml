@@ -1,0 +1,92 @@
+name: Build SystemMonitorApp Ventura
+on:
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Récupérer les fichiers
+        uses: actions/checkout@v4
+
+      - name: Décompresser le projet ZIP
+        run: |
+          ZIP_FILE=$(find . -name "*.zip" | head -n 1)
+          if [ -n "$ZIP_FILE" ]; then
+            echo "Fichier ZIP trouvé : $ZIP_FILE"
+            unzip -o "$ZIP_FILE"
+          else
+            echo "Erreur : Aucun fichier ZIP trouvé !"
+            exit 1
+          fi
+
+      - name: Réparer automatiquement le projet Xcode corrompu par l'IA
+        run: |
+          cat << 'EOF' > repair.py
+          import re, os
+          pbxproj_path = None
+          for root, dirs, files in os.walk('.'):
+              if 'project.pbxproj' in files:
+                  pbxproj_path = os.path.join(root, 'project.pbxproj')
+                  break
+          if pbxproj_path:
+              print(f"Analyse et réparation de : {pbxproj_path}")
+              with open(pbxproj_path, 'r', encoding='utf-8', errors='ignore') as f:
+                  lines = f.readlines()
+              # Nettoie les éventuels conflits Git
+              clean_lines = [l for l in lines if not (l.startswith('<<<<<<<') or l.startswith('=======') or l.startswith('>>>>>>>'))]
+              content = ''.join(clean_lines)
+              # Trouve les identifiants corrompus insérés par l'IA
+              file_ref_ids = set(re.findall(r'([A-F0-9]{24,32})\s*/\*.*\*/\s*=\s*\{isa\s*=\s*PBXFileReference;', content))
+              def remove_bad_refs(match):
+                  lines_in_block = match.group(0).split('\n')
+                  filtered = []
+                  for l in lines_in_block:
+                      if any(rid in l for rid in file_ref_ids):
+                          print(f"Ligne corrompue supprimée : {l.strip()}")
+                          continue
+                      filtered.append(l)
+                  return '\n'.join(filtered)
+              fixed_content = re.sub(r'files\s*=\s*\(([^)]*)\);', remove_bad_refs, content)
+              with open(pbxproj_path, 'w', encoding='utf-8') as f:
+                  f.write(fixed_content)
+              print("Projet Xcode nettoyé et réparé !")
+          else:
+              print("Aucun fichier projet à réparer.")
+          EOF
+          python3 repair.py
+
+      - name: Trouver et Compiler l'application
+        run: |
+          XCODEPROJ_PATH=$(find . -name "*.xcodeproj" | head -n 1)
+          if [ -z "$XCODEPROJ_PATH" ]; then
+            echo "Erreur : Impossible de trouver un fichier .xcodeproj !"
+            exit 1
+          fi
+          echo "Projet trouvé : $XCODEPROJ_PATH"
+          
+          SCHEME_NAME=$(xcodebuild -list -project "$XCODEPROJ_PATH" | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag' | sed 's/^[[:space:]]*//' | head -n 1)
+          if [ -z "$SCHEME_NAME" ]; then
+            SCHEME_NAME="SystemMonitorApp"
+          fi
+          echo "Scheme détecté : $SCHEME_NAME"
+
+          xcodebuild -project "$XCODEPROJ_PATH" \
+                     -scheme "$SCHEME_NAME" \
+                     -configuration Release \
+                     CODE_SIGNING_ALLOWED=NO \
+                     CODE_SIGNING_REQUIRED=NO \
+                     CODE_SIGN_IDENTITY="" \
+                     MACOSX_DEPLOYMENT_TARGET=13.0 \
+                     -derivedDataPath build
+
+      - name: Compresser l'application finale
+        run: |
+          cd build/Build/Products/Release
+          zip -r ../../../../SystemMonitorApp_Ventura.zip *.app
+
+      - name: Télécharger le fichier final
+        uses: actions/upload-artifact@v4
+        with:
+          name: SystemMonitorApp-Ventura
+          path: SystemMonitorApp_Ventura.zip
