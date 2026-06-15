@@ -20,11 +20,11 @@ jobs:
             exit 1
           fi
 
-      - name: Réparer automatiquement le projet Xcode corrompu
+      - name: Reconstruire le fichier projet Xcode
         run: |
-          cat << 'EOF' > repair.py
-          import re
+          python3 << 'PYTHON_EOF'
           import os
+          import re
           
           pbxproj_path = None
           for root, dirs, files in os.walk('.'):
@@ -32,64 +32,86 @@ jobs:
                   pbxproj_path = os.path.join(root, 'project.pbxproj')
                   break
           
-          if pbxproj_path:
-              print(f"Réparation de : {pbxproj_path}")
-              with open(pbxproj_path, 'r', encoding='utf-8', errors='ignore') as f:
-                  content = f.read()
+          if not pbxproj_path:
+              print("❌ Aucun fichier project.pbxproj trouvé!")
+              exit(1)
+          
+          print(f"📁 Traitement de : {pbxproj_path}")
+          
+          with open(pbxproj_path, 'r', encoding='utf-8', errors='ignore') as f:
+              content = f.read()
+          
+          # 1. Supprimer les marqueurs de conflit Git
+          content = re.sub(r'<<<<<<<[^\n]*\n.*?\n=======\n.*?\n>>>>>>>[^\n]*\n', '', content, flags=re.DOTALL)
+          
+          # 2. Supprimer TOUS les attributs 'buildPhase'
+          content = re.sub(r'^\s*buildPhase\s*=\s*[A-Fa-f0-9]+;\s*$', '', content, flags=re.MULTILINE)
+          
+          # 3. Supprimer les blocs PBXFileReference mal formés
+          lines = content.split('\n')
+          fixed_lines = []
+          skip_count = 0
+          
+          for i, line in enumerate(lines):
+              if skip_count > 0:
+                  skip_count -= 1
+                  continue
               
-              # Remove Git conflict markers
-              content = re.sub(r'<<<<<<<[^\n]*\n.*?\n=======\n.*?\n>>>>>>>[^\n]*\n', '', content, flags=re.DOTALL)
-              
-              # Remove lines with buildPhase attribute in PBXFileReference (causes the selector error)
-              # Match both uppercase and lowercase hex characters, variable length
-              content = re.sub(r'^\s*buildPhase\s*=\s*[A-Fa-f0-9]+;\s*\n', '', content, flags=re.MULTILINE)
-              
-              # Remove malformed file references that contain buildPhase in definition
-              lines = content.split('\n')
-              fixed_lines = []
-              skip_block = False
-              for line in lines:
-                  if 'isa = PBXFileReference' in line and 'buildPhase' in line:
-                      skip_block = True
+              if re.search(r'isa\s*=\s*PBXFileReference', line):
+                  check_ahead = '\n'.join(lines[i:min(i+10, len(lines))])
+                  if 'buildPhase' in check_ahead:
+                      for j in range(i, min(i+15, len(lines))):
+                          if '};' in lines[j]:
+                              skip_count = j - i
+                              break
                       continue
-                  if skip_block:
-                      if '};' in line:
-                          skip_block = False
-                      continue
-                  fixed_lines.append(line)
               
-              content = '\n'.join(fixed_lines)
-              
-              # Clean up empty files arrays
-              content = re.sub(r'files\s*=\s*\(\s*\);', 'files = ();', content)
-              
-              # Fix any dangling commas in arrays
-              content = re.sub(r',(\s*[}\)])', r'\1', content)
-              
-              with open(pbxproj_path, 'w', encoding='utf-8') as f:
-                  f.write(content)
-              
-              print("✓ Projet Xcode réparé avec succès !")
-          else:
-              print("Aucun fichier projet trouvé.")
-          EOF
-          python3 repair.py
+              fixed_lines.append(line)
+          
+          content = '\n'.join(fixed_lines)
+          
+          # 4. Nettoyer les espaces en blanc excessifs
+          content = re.sub(r'\n\n\n+', '\n\n', content)
+          
+          # 5. Fixer les tableaux vides mal formés
+          content = re.sub(r'files\s*=\s*\(\s*\);', 'files = ();', content)
+          
+          # 6. Supprimer les virgules en fin
+          content = re.sub(r',(\s*[}\)])', r'\1', content)
+          
+          with open(pbxproj_path, 'w', encoding='utf-8') as f:
+              f.write(content)
+          
+          print("✅ Fichier project.pbxproj réparé avec succès!")
+          PYTHON_EOF
 
-      - name: Trouver et Compiler l'application
+      - name: Valider le projet Xcode
         run: |
           XCODEPROJ_PATH=$(find . -name "*.xcodeproj" | head -n 1)
           if [ -z "$XCODEPROJ_PATH" ]; then
-            echo "Erreur : Impossible de trouver un fichier .xcodeproj !"
+            echo "❌ Impossible de trouver un fichier .xcodeproj !"
             exit 1
           fi
-          echo "Projet trouvé : $XCODEPROJ_PATH"
+          echo "📍 Projet trouvé : $XCODEPROJ_PATH"
           
-          SCHEME_NAME=$(xcodebuild -list -project "$XCODEPROJ_PATH" 2>/dev/null | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag' | sed 's/^[[:space:]]*//' | head -n 1)
+          xcodebuild -list -project "$XCODEPROJ_PATH" -json > /dev/null 2>&1
+          if [ $? -ne 0 ]; then
+            echo "⚠️ Le projet est toujours endommagé!"
+            exit 1
+          fi
+          
+          echo "✅ Projet valide!"
+
+      - name: Compiler l'application
+        run: |
+          XCODEPROJ_PATH=$(find . -name "*.xcodeproj" | head -n 1)
+          SCHEME_NAME=$(xcodebuild -list -project "$XCODEPROJ_PATH" -json 2>/dev/null | grep -m 1 'name' | head -1 | sed 's/.*"name" : "\(.*\)".*/\1/')
+          
           if [ -z "$SCHEME_NAME" ]; then
             SCHEME_NAME="SystemMonitorApp"
           fi
-          echo "Scheme détecté : $SCHEME_NAME"
-
+          echo "🔨 Compilation du scheme : $SCHEME_NAME"
+          
           xcodebuild -project "$XCODEPROJ_PATH" \
                      -scheme "$SCHEME_NAME" \
                      -configuration Release \
@@ -98,12 +120,18 @@ jobs:
                      CODE_SIGN_IDENTITY="" \
                      MACOSX_DEPLOYMENT_TARGET=13.0 \
                      -derivedDataPath build \
-                     -verbose
+                     -verbose 2>&1 | tail -100
 
       - name: Compresser l'application finale
         run: |
-          cd build/Build/Products/Release
-          zip -r ../../../../SystemMonitorApp_Ventura.zip *.app
+          if [ -d "build/Build/Products/Release" ]; then
+            cd build/Build/Products/Release
+            zip -r ../../../../SystemMonitorApp_Ventura.zip *.app
+          else
+            echo "❌ Répertoire de build introuvable!"
+            find . -name "*.app" -type d
+            exit 1
+          fi
 
       - name: Télécharger le fichier final
         uses: actions/upload-artifact@v4
