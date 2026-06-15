@@ -1,0 +1,111 @@
+name: Build SystemMonitorApp Ventura
+on:
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Récupérer les fichiers
+        uses: actions/checkout@v4
+
+      - name: Décompresser le projet ZIP
+        run: |
+          ZIP_FILE=$(find . -name "*.zip" | head -n 1)
+          if [ -n "$ZIP_FILE" ]; then
+            echo "Fichier ZIP trouvé : $ZIP_FILE"
+            unzip -o "$ZIP_FILE"
+          else
+            echo "Erreur : Aucun fichier ZIP trouvé !"
+            exit 1
+          fi
+
+      - name: Réparer automatiquement le projet Xcode corrompu
+        run: |
+          cat << 'EOF' > repair.py
+          import re
+          import os
+          
+          pbxproj_path = None
+          for root, dirs, files in os.walk('.'):
+              if 'project.pbxproj' in files:
+                  pbxproj_path = os.path.join(root, 'project.pbxproj')
+                  break
+          
+          if pbxproj_path:
+              print(f"Réparation de : {pbxproj_path}")
+              with open(pbxproj_path, 'r', encoding='utf-8', errors='ignore') as f:
+                  content = f.read()
+              
+              # Remove Git conflict markers
+              content = re.sub(r'<<<<<<<[^\n]*\n.*?\n=======\n.*?\n>>>>>>>[^\n]*\n', '', content, flags=re.DOTALL)
+              
+              # Remove lines with buildPhase attribute in PBXFileReference (causes the selector error)
+              content = re.sub(r'^\s*buildPhase\s*=\s*[A-F0-9]{24};\s*\n', '', content, flags=re.MULTILINE)
+              
+              # Remove malformed file references that contain buildPhase in definition
+              lines = content.split('\n')
+              fixed_lines = []
+              skip_block = False
+              for line in lines:
+                  if 'isa = PBXFileReference' in line and 'buildPhase' in line:
+                      skip_block = True
+                      continue
+                  if skip_block:
+                      if '};' in line:
+                          skip_block = False
+                      continue
+                  fixed_lines.append(line)
+              
+              content = '\n'.join(fixed_lines)
+              
+              # Clean up empty files arrays
+              content = re.sub(r'files\s*=\s*\(\s*\);', 'files = ();', content)
+              
+              # Fix any dangling commas in arrays
+              content = re.sub(r',(\s*[}\)])', r'\1', content)
+              
+              with open(pbxproj_path, 'w', encoding='utf-8') as f:
+                  f.write(content)
+              
+              print("✓ Projet Xcode réparé avec succès !")
+          else:
+              print("Aucun fichier projet trouvé.")
+          EOF
+          python3 repair.py
+
+      - name: Trouver et Compiler l'application
+        run: |
+          XCODEPROJ_PATH=$(find . -name "*.xcodeproj" | head -n 1)
+          if [ -z "$XCODEPROJ_PATH" ]; then
+            echo "Erreur : Impossible de trouver un fichier .xcodeproj !"
+            exit 1
+          fi
+          echo "Projet trouvé : $XCODEPROJ_PATH"
+          
+          SCHEME_NAME=$(xcodebuild -list -project "$XCODEPROJ_PATH" 2>/dev/null | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag' | sed 's/^[[:space:]]*//' | head -n 1)
+          if [ -z "$SCHEME_NAME" ]; then
+            SCHEME_NAME="SystemMonitorApp"
+          fi
+          echo "Scheme détecté : $SCHEME_NAME"
+
+          xcodebuild -project "$XCODEPROJ_PATH" \
+                     -scheme "$SCHEME_NAME" \
+                     -configuration Release \
+                     CODE_SIGNING_ALLOWED=NO \
+                     CODE_SIGNING_REQUIRED=NO \
+                     CODE_SIGN_IDENTITY="" \
+                     MACOSX_DEPLOYMENT_TARGET=13.0 \
+                     -derivedDataPath build \
+                     -verbose
+
+      - name: Compresser l'application finale
+        run: |
+          cd build/Build/Products/Release
+          zip -r ../../../../SystemMonitorApp_Ventura.zip *.app
+
+      - name: Télécharger le fichier final
+        uses: actions/upload-artifact@v4
+        with:
+          name: SystemMonitorApp-Ventura
+          path: SystemMonitorApp_Ventura.zip
